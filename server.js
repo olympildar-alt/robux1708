@@ -1,4 +1,4 @@
-// server.js — Telegram redirect + session + admin notify (NeDB, без нативных модулей)
+// server.js — Telegram redirect + session + admin notify + /admin (NeDB, без нативных модулей)
 
 const express = require("express");
 const crypto = require("crypto");
@@ -7,16 +7,17 @@ const session = require("express-session");
 const Datastore = require("nedb-promises");
 require("dotenv").config();
 
-// В Node 18+ fetch глобальный; ниже подключите node-fetch@2
+// В Node 18+ fetch глобальный; ниже подключите node-fetch@2 при необходимости
 const fetchFn = globalThis.fetch || require("node-fetch");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 const BOT_TOKEN = process.env.BOT_TOKEN || "";
-const ADMIN_ID = process.env.ADMIN_ID || "";       // chat id для уведомлений
+const ADMIN_ID = process.env.ADMIN_ID || "";              // chat id для уведомлений
 const NOTIFY_COOLDOWN_MIN = Number(process.env.NOTIFY_COOLDOWN_MIN || 5);
 const SESSION_SECRET = process.env.SESSION_SECRET || "supersecret";
+const ADMIN_PASS = process.env.ADMIN_PASS || "";          // пароль для /admin
 
 if (!BOT_TOKEN) {
   console.error("❌ BOT_TOKEN не задан в .env");
@@ -38,7 +39,11 @@ app.use(session({
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
-  cookie: { httpOnly: true, sameSite: "lax" } // в проде добавьте secure:true
+  cookie: {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production" // на HTTPS в проде
+  }
 }));
 
 // --- Проверка подписи Telegram
@@ -93,11 +98,14 @@ app.get("/auth/telegram-redirect", async (req, res) => {
   await users.update({ telegram_id: user.telegram_id }, { $set: user }, { upsert: true });
 
   const now = new Date();
+  const ip = (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").toString();
+  const ua = req.get("user-agent") || "";
+
   await logins.insert({
     telegram_id: user.telegram_id,
     ts: now.toISOString(),
-    ip: (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").toString(),
-    user_agent: req.get("user-agent") || ""
+    ip,
+    user_agent: ua
   });
 
   req.session.user = {
@@ -120,7 +128,6 @@ app.get("/auth/telegram-redirect", async (req, res) => {
   if (shouldNotify) {
     const full = [user.first_name, user.last_name].filter(Boolean).join(" ");
     const handle = user.username ? `@${user.username}` : "—";
-    const ip = (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").toString();
     const when = fmtDate(now);
     const msg = `🔔 <b>Новый вход через Telegram</b>\n` +
                 `👤 <b>${full || "Без имени"}</b> (${handle})\n` +
@@ -137,7 +144,7 @@ app.get("/auth/telegram-redirect", async (req, res) => {
 app.get("/api/me", (req, res) => {
   res.json({ user: req.session.user || null });
 });
-app.get("/me", (req, res) => { // дубликат — не мешает
+app.get("/me", (req, res) => {
   res.json(req.session.user || null);
 });
 
@@ -147,6 +154,42 @@ app.get("/logout", (req, res) => {
 });
 app.post("/logout", (req, res) => {
   req.session.destroy(() => res.json({ ok: true }));
+});
+
+// --- Простая админ-страница логов (по паролю ?pass=)
+app.get("/admin", async (req, res) => {
+  if (!ADMIN_PASS || req.query.pass !== ADMIN_PASS) return res.status(401).send("Unauthorized");
+  const rows = await logins.find({}).sort({ ts: -1 }).limit(300);
+  const ulist = await users.find({});
+  const uMap = Object.fromEntries(ulist.map(u => [u.telegram_id, u]));
+
+  const html = `
+  <meta charset="utf-8"><title>Logins</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Arial;padding:16px}
+    table{border-collapse:collapse;width:100%}
+    th,td{border:1px solid #e5e5e5;padding:6px;font-size:14px}
+    th{background:#f8f8f8;text-align:left}
+    code{background:#f4f4f4;padding:1px 4px;border-radius:4px}
+  </style>
+  <h2>Последние входы (${rows.length})</h2>
+  <table>
+    <tr><th>Время</th><th>Имя</th><th>Username</th><th>ID</th><th>IP</th><th>User-Agent</th></tr>
+    ${rows.map(r=>{
+      const u=uMap[r.telegram_id]||{};
+      const name=[u.first_name,u.last_name].filter(Boolean).join(" ")||"—";
+      const uname=u.username?("@"+u.username):"—";
+      return `<tr>
+        <td>${r.ts}</td>
+        <td>${name}</td>
+        <td>${uname}</td>
+        <td><code>${r.telegram_id}</code></td>
+        <td>${r.ip||"—"}</td>
+        <td>${(r.user_agent||"").slice(0,160)}</td>
+      </tr>`;
+    }).join("")}
+  </table>`;
+  res.send(html);
 });
 
 // --- Healthcheck
