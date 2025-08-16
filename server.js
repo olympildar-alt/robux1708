@@ -1,4 +1,5 @@
-// server.js — Telegram Login Widget + Telegram WebApp, сессии, уведомления админу, админ-таблица (NeDB) + ВЕБХУК БОТА (inline web_app)
+// server.js — Telegram Login Widget + Telegram WebApp + сессии + уведомления + админка + вебхук бота
+// Добавлена диагностика: /debug и расширенные логи старта, ловля ошибок процесса.
 
 const express = require("express");
 const crypto = require("crypto");
@@ -22,34 +23,41 @@ const ADMIN_PASS = process.env.ADMIN_PASS || "";
 const SESSION_SECRET = process.env.SESSION_SECRET || "supersecret";
 const NOTIFY_COOLDOWN_MIN = Number(process.env.NOTIFY_COOLDOWN_MIN || 5);
 const WEBAPP_NOTIFY = Number(process.env.WEBAPP_NOTIFY ?? 1);
-
-const PUBLIC_URL = process.env.PUBLIC_URL || "";      // https://domain
+const PUBLIC_URL = process.env.PUBLIC_URL || "";
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "change_me_secret";
 
-if (!BOT_TOKEN) {
-  console.error("❌ BOT_TOKEN не задан в .env");
-  process.exit(1);
-}
-if (!PUBLIC_URL || !PUBLIC_URL.startsWith("https://")) {
-  console.warn("⚠️ PUBLIC_URL не задан или не https — WebApp может не открыться в Telegram WebView.");
+// --- стартовые проверки + лог
+const startupIssues = [];
+if (!BOT_TOKEN) startupIssues.push("BOT_TOKEN is missing");
+if (!PUBLIC_URL || !PUBLIC_URL.startsWith("https://")) startupIssues.push("PUBLIC_URL must be https");
+if (!SESSION_SECRET) startupIssues.push("SESSION_SECRET is missing");
+if (!ADMIN_PASS) startupIssues.push("ADMIN_PASS is missing (admin/debug protected routes)");
+
+console.log("[startup] env summary:", {
+  hasBOT_TOKEN: !!BOT_TOKEN,
+  hasADMIN_ID: !!ADMIN_ID,
+  hasADMIN_PASS: !!ADMIN_PASS,
+  hasSESSION_SECRET: !!SESSION_SECRET,
+  PUBLIC_URL,
+  PORT,
+});
+if (startupIssues.length) {
+  console.warn("[startup] issues:", startupIssues);
 }
 
-// --- БД ---------------------------------------------------------------------
+// --- БД
 const dataDir = path.join(__dirname, "data");
 fs.mkdirSync(dataDir, { recursive: true });
-
 const users = Datastore.create({ filename: path.join(dataDir, "users.db"), autoload: true });
 const logins = Datastore.create({ filename: path.join(dataDir, "logins.db"), autoload: true });
 
-// --- Утилиты ---------------------------------------------------------------
+// --- утилиты
 const FIVE_MIN = 300;
-
 function getIp(req) {
   const xfwd = req.headers["x-forwarded-for"];
   if (xfwd) return String(xfwd).split(",")[0].trim();
   return req.ip || req.connection?.remoteAddress || "";
 }
-
 function timingSafeEq(aHex, bHex) {
   try {
     const a = Buffer.from(aHex, "hex");
@@ -59,8 +67,16 @@ function timingSafeEq(aHex, bHex) {
     return false;
   }
 }
-
-// Login Widget (redirect)
+function parseInitData(initDataStr) {
+  const params = {};
+  for (const kv of String(initDataStr).split("&")) {
+    const [k, v] = kv.split("=");
+    if (!k) continue;
+    params[decodeURIComponent(k)] = decodeURIComponent(v || "");
+  }
+  if (params.user) { try { params.user = JSON.parse(params.user); } catch {} }
+  return params;
+}
 function verifyLoginWidget(query) {
   const data = { ...query };
   const { hash } = data;
@@ -83,20 +99,6 @@ function verifyLoginWidget(query) {
     last_name: query.last_name || null,
     photo_url: query.photo_url || null,
   };
-}
-
-// WebApp initData
-function parseInitData(initDataStr) {
-  const params = {};
-  for (const kv of String(initDataStr).split("&")) {
-    const [k, v] = kv.split("=");
-    if (!k) continue;
-    params[decodeURIComponent(k)] = decodeURIComponent(v || "");
-  }
-  if (params.user) {
-    try { params.user = JSON.parse(params.user); } catch {}
-  }
-  return params;
 }
 function verifyWebApp(initDataStr) {
   if (!initDataStr) return null;
@@ -122,7 +124,6 @@ function verifyWebApp(initDataStr) {
     photo_url: u.photo_url || null,
   };
 }
-
 async function safeFetch(url, init = {}, timeoutMs = 8000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -148,14 +149,12 @@ async function notifyAdmin(text) {
   if (!ADMIN_ID) return;
   await tgSend(ADMIN_ID, { text, parse_mode: "HTML", disable_web_page_preview: true });
 }
-
 async function completeLogin(req, source, user) {
   await users.update(
     { telegram_id: user.telegram_id },
     { $set: { ...user, updated_at: Date.now() } },
     { upsert: true }
   );
-
   const loginDoc = {
     telegram_id: user.telegram_id,
     source,
@@ -188,7 +187,7 @@ async function completeLogin(req, source, user) {
   };
 }
 
-// --- Middleware -------------------------------------------------------------
+// --- middleware
 app.set("trust proxy", 1);
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(morgan("tiny"));
@@ -207,23 +206,19 @@ app.use("/auth/telegram-redirect", loginLimiter);
 
 app.use(express.static(path.join(__dirname, "public"), { maxAge: "1h", etag: true }));
 
-// --- Login Widget redirect --------------------------------------------------
+// --- routes
 app.get("/auth/telegram-redirect", async (req, res) => {
   const user = verifyLoginWidget(req.query);
   if (!user) return res.status(401).send("Auth failed");
   await completeLogin(req, "widget", user);
   req.session.save(() => res.redirect("/"));
 });
-
-// --- WebApp auth ------------------------------------------------------------
 app.post("/webapp-auth", async (req, res) => {
   const user = verifyWebApp(req.body.initData);
   if (!user || !user.telegram_id) return res.status(401).json({ ok: false });
   await completeLogin(req, "webapp", user);
   req.session.save(() => res.json({ ok: true }));
 });
-
-// --- API --------------------------------------------------------------------
 app.get("/api/me", (req, res) => {
   if (!req.session.user) return res.status(401).json({ ok: false });
   res.json({ ok: true, user: req.session.user });
@@ -231,7 +226,7 @@ app.get("/api/me", (req, res) => {
 app.post("/logout", (req, res) => { req.session.destroy(() => res.json({ ok: true })); });
 app.get("/logout", (req, res) => { req.session.destroy(() => res.redirect("/")); });
 
-// --- Admin table ------------------------------------------------------------
+// admin
 app.get("/admin", async (req, res) => {
   if (!ADMIN_PASS || req.query.pass !== ADMIN_PASS) return res.status(401).send("Unauthorized");
   const rows = await logins.cfind({}).sort({ ts: -1 }).limit(200).exec();
@@ -250,11 +245,26 @@ ${rows.map(r=>{
   res.send(html);
 });
 
-// --- Health -----------------------------------------------------------------
+// health + debug
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
+app.get("/debug", (req, res) => {
+  if (!ADMIN_PASS || req.query.pass !== ADMIN_PASS) return res.status(401).send("Unauthorized");
+  res.json({
+    ok: true,
+    env: {
+      BOT_TOKEN: !!BOT_TOKEN,
+      ADMIN_ID: !!ADMIN_ID,
+      ADMIN_PASS: !!ADMIN_PASS,
+      SESSION_SECRET: !!SESSION_SECRET,
+      PUBLIC_URL,
+      WEBHOOK_SECRET: WEBHOOK_SECRET ? true : false,
+      PORT: PORT
+    },
+    notes: startupIssues
+  });
+});
 
-// --- WEBХУК БОТА ------------------------------------------------------------
-// 1) Установка вебхука (разово)
+// webhook install
 app.get("/bot/set-webhook", async (req, res) => {
   if (!ADMIN_PASS || req.query.pass !== ADMIN_PASS) return res.status(401).send("Unauthorized");
   if (!PUBLIC_URL) return res.status(400).send("PUBLIC_URL not set");
@@ -269,7 +279,7 @@ app.get("/bot/set-webhook", async (req, res) => {
   res.json({ ok: true, result: j });
 });
 
-// 2) Сам вебхук — /start с INLINE web_app
+// webhook
 app.post("/bot/webhook", async (req, res) => {
   if (req.query.secret !== WEBHOOK_SECRET) return res.status(401).json({ ok: false });
   const update = req.body || {};
@@ -283,17 +293,17 @@ app.post("/bot/webhook", async (req, res) => {
     const webAppUrl = `${PUBLIC_URL.replace(/\/$/,"")}/webapp.html`;
     await tgSend(chatId, {
       text: "Нажми кнопку, чтобы открыть приложение:",
-      reply_markup: {
-        inline_keyboard: [[
-          { text: "Открыть приложение", web_app: { url: webAppUrl } }
-        ]]
-      }
+      reply_markup: { inline_keyboard: [[ { text: "Открыть приложение", web_app: { url: webAppUrl } } ]] }
     });
   }
   res.json({ ok: true });
 });
 
-// --- Start ------------------------------------------------------------------
+// глобальные ловушки, чтобы видеть падения
+process.on("unhandledRejection", (e) => { console.error("unhandledRejection", e); });
+process.on("uncaughtException", (e) => { console.error("uncaughtException", e); process.exit(1); });
+
+// start
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Server running on 0.0.0.0:${PORT}`);
 });
