@@ -1,4 +1,4 @@
-// server.js — Telegram redirect + session + admin notify + /admin (NeDB, без нативных модулей)
+// server.js — Telegram redirect + WebApp login + session + admin notify + /admin (NeDB)
 
 const express = require("express");
 const crypto = require("crypto");
@@ -14,10 +14,11 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 const BOT_TOKEN = process.env.BOT_TOKEN || "";
-const ADMIN_ID = process.env.ADMIN_ID || "";              // chat id для уведомлений
+const ADMIN_ID = process.env.ADMIN_ID || "";                  // chat id для уведомлений
 const NOTIFY_COOLDOWN_MIN = Number(process.env.NOTIFY_COOLDOWN_MIN || 5);
 const SESSION_SECRET = process.env.SESSION_SECRET || "supersecret";
-const ADMIN_PASS = process.env.ADMIN_PASS || "";          // пароль для /admin
+const ADMIN_PASS = process.env.ADMIN_PASS || "";              // пароль для /admin
+const WEBAPP_NOTIFY = Number(process.env.WEBAPP_NOTIFY ?? 1); // пуш при входе через WebApp
 
 if (!BOT_TOKEN) {
   console.error("❌ BOT_TOKEN не задан в .env");
@@ -46,7 +47,7 @@ app.use(session({
   }
 }));
 
-// --- Проверка подписи Telegram
+// --- Проверка подписи Telegram Login Widget (redirect mode)
 function isTelegramAuthValid(data) {
   if (!data || !data.hash) return false;
   const { hash, ...rest } = data;
@@ -61,6 +62,39 @@ function isTelegramAuthValid(data) {
   const fresh = authDate > 0 && nowSec - authDate < 86400;
 
   return hmac === hash && fresh;
+}
+
+// --- Проверка подписи Telegram WebApp (initData)
+function verifyWebApp(initData) {
+  if (!initData) return null;
+  const params = new URLSearchParams(initData);
+  const hash = params.get("hash");
+  if (!hash) return null;
+
+  // data_check_string
+  const entries = [];
+  for (const [k, v] of params) {
+    if (k === "hash") continue;
+    entries.push(`${k}=${v}`);
+  }
+  entries.sort();
+  const dataCheckString = entries.join("\n");
+
+  // secret = HMAC_SHA256("WebAppData", BOT_TOKEN)
+  const secretKey = crypto.createHmac("sha256", "WebAppData").update(BOT_TOKEN).digest();
+  const hmac = crypto.createHmac("sha256", secretKey).update(dataCheckString).digest("hex");
+  if (hmac !== hash) return null;
+
+  // свежесть 24ч
+  const authDate = Number(params.get("auth_date") || 0);
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (!(authDate > 0 && nowSec - authDate < 86400)) return null;
+
+  try {
+    return JSON.parse(params.get("user") || "{}");
+  } catch {
+    return null;
+  }
 }
 
 // --- Уведомление админу
@@ -80,21 +114,8 @@ async function notifyAdmin(text) {
 
 const fmtDate = d => d.toISOString().replace("T", " ").slice(0, 19);
 
-// --- Редирект от Telegram Login Widget
-app.get("/auth/telegram-redirect", async (req, res) => {
-  console.log("TG redirect query:", req.query);
-
-  const data = req.query || {};
-  if (!isTelegramAuthValid(data)) return res.status(401).send("Invalid Telegram auth");
-
-  const user = {
-    telegram_id: Number(data.id),
-    first_name: data.first_name || "",
-    last_name: data.last_name || "",
-    username: data.username || "",
-    photo_url: data.photo_url || ""
-  };
-
+// --- Хелпер: upsert/лог/сессия + уведомление
+async function completeLogin(req, user, notifyPrefix = "🔔 Новый вход через Telegram") {
   await users.update({ telegram_id: user.telegram_id }, { $set: user }, { upsert: true });
 
   const now = new Date();
@@ -129,15 +150,50 @@ app.get("/auth/telegram-redirect", async (req, res) => {
     const full = [user.first_name, user.last_name].filter(Boolean).join(" ");
     const handle = user.username ? `@${user.username}` : "—";
     const when = fmtDate(now);
-    const msg = `🔔 <b>Новый вход через Telegram</b>\n` +
+    const msg = `${notifyPrefix}\n` +
                 `👤 <b>${full || "Без имени"}</b> (${handle})\n` +
                 `🆔 <code>${user.telegram_id}</code>\n` +
                 `🕒 ${when}\n` +
                 `🌐 IP: <code>${ip}</code>`;
     await notifyAdmin(msg);
   }
+}
 
+// --- Режим редиректа Telegram Login Widget
+app.get("/auth/telegram-redirect", async (req, res) => {
+  console.log("TG redirect query:", req.query);
+
+  const data = req.query || {};
+  if (!isTelegramAuthValid(data)) return res.status(401).send("Invalid Telegram auth");
+
+  const user = {
+    telegram_id: Number(data.id),
+    first_name: data.first_name || "",
+    last_name: data.last_name || "",
+    username: data.username || "",
+    photo_url: data.photo_url || ""
+  };
+
+  await completeLogin(req, user, "🔔 <b>Новый вход через Telegram (Redirect)</b>");
   res.redirect("/"); // фронт подхватит сессию через /api/me
+});
+
+// --- Режим WebApp (1 клик) — принимает initData
+app.post("/webapp-auth", async (req, res) => {
+  const { initData } = req.body || {};
+  const tgUser = verifyWebApp(initData);
+  if (!tgUser) return res.status(401).send("Invalid WebApp auth");
+
+  const user = {
+    telegram_id: Number(tgUser.id),
+    first_name: tgUser.first_name || "",
+    last_name: tgUser.last_name || "",
+    username: tgUser.username || "",
+    photo_url: tgUser.photo_url || ""
+  };
+
+  await completeLogin(req, user, "🟦 <b>Вход через WebApp</b>");
+  res.json({ ok: true });
 });
 
 // --- API для фронта
