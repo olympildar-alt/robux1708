@@ -3,107 +3,56 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>RBX — Вход через Telegram</title>
+  <title>Robux — Telegram Login</title>
   <link rel="stylesheet" href="/style.css" />
-  <meta name="color-scheme" content="dark" />
+  <script>
+    // Укажи имя своего бота (без @)
+    window.BOT_USERNAME = "robuxtransferbot";
+  </script>
 </head>
 <body>
-  <header class="header">
-    <div class="brand">
-      <div class="logo-square"></div>
-      <span class="brand-text">ROBLOX EXCHANGE</span>
-    </div>
+  <header class="wrap">
+    <div class="logo">ROBLOX</div>
     <nav class="nav">
-      <a href="#" class="nav-link">Главная</a>
-      <a href="#" class="nav-link">Маркет</a>
-      <a href="#" class="nav-link">Поддержка</a>
+      <a href="https://t.me/" target="_blank" rel="noopener">Telegram</a>
+      <a href="/healthz" target="_blank" rel="noopener">healthz</a>
     </nav>
   </header>
 
-  <main class="main">
+  <main class="wrap">
     <section class="hero">
-      <h1>Быстрые сделки. Надёжный вход.</h1>
-      <p class="sub">Выберите удобный способ авторизации через Telegram.</p>
+      <h1>Вход через Telegram</h1>
+      <p class="muted">Два способа: через <b>кнопку Telegram</b> (redirect) или <b>WebApp</b> внутри бота.</p>
 
-      <!-- Кнопки быстрого входа через приложение Telegram (WebApp) -->
-      <div class="login-actions" style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center;margin-bottom:12px">
-        <a id="openTgApp" class="btn">Быстрый вход (приложение Telegram)</a>
-        <a id="openTgWeb" class="btn-outline" target="_blank" rel="noopener">Открыть в Telegram</a>
+      <div class="card btns">
+        <!-- Redirect (Login Widget) -->
+        <script async src="https://telegram.org/js/telegram-widget.js?22"
+          data-telegram-login=""
+          data-size="large"
+          data-userpic="false"
+          data-request-access="write"
+          data-auth-url="/auth/telegram-redirect">
+        </script>
+
+        <!-- Открыть бота и войти через WebApp -->
+        <a id="open-bot" class="button" target="_blank" rel="noopener">Открыть бота</a>
+        <p class="muted small">В боте нажми «Открыть веб-приложение», мы автоматически подтвердим вход.</p>
       </div>
 
-      <!-- Официальный виджет Telegram (fallback, если не открыли приложение) -->
-      <div id="loginBox" class="login-box"></div>
-
-      <!-- Блок профиля после успешного входа -->
-      <div id="me" class="me hidden">
-        <img id="avatar" class="avatar" alt="avatar" />
-        <div class="me-info">
-          <div class="me-name" id="name"></div>
-          <div class="me-username" id="username"></div>
-        </div>
-        <!-- GET /logout поддержан на сервере -->
-        <a id="logoutLink" class="btn-outline" href="/logout">Выйти</a>
-      </div>
-    </section>
-
-    <section class="cards">
-      <div class="card">
-        <h3>Моментальный вход</h3>
-        <p>Через приложение Telegram — одним нажатием.</p>
-      </div>
-      <div class="card">
-        <h3>Уведомления</h3>
-        <p>Администратор получает оповещение о каждом входе.</p>
-      </div>
-      <div class="card">
-        <h3>Приватность</h3>
-        <p>Без паролей — только подтверждение через Telegram.</p>
+      <div class="card" id="me-card" hidden>
+        <h3>Вы вошли</h3>
+        <div id="me"></div>
+        <button id="logout" class="button outline">Выйти</button>
       </div>
     </section>
   </main>
 
-  <footer class="footer">
-    <span>© 2025 RBX Exchange</span>
+  <footer class="wrap foot">
+    <span class="muted">© robux-auth</span>
+    <span class="muted">Made for Telegram</span>
   </footer>
 
-  <script>
-    // имя бота (без @)
-    const BOT_USERNAME = "robuxtransferbot";
-
-    // Страница возврата после WebApp-логина (текущая страница)
-    const returnUrl = window.location.origin + window.location.pathname;
-    // Кодируем для передачи в startapp (ret_<base64>)
-    const retParam = "ret_" + btoa(encodeURIComponent(returnUrl));
-
-    // Ссылки для открытия бота
-    // tg:// — открывает приложение Telegram (мобильное/десктопное)
-    const tgAppUrl = `tg://resolve?domain=${BOT_USERNAME}&startapp=${retParam}`;
-    // https://t.me — fallback, если протокол tg:// не сработал
-    const tgWebUrl = `https://t.me/${BOT_USERNAME}?startapp=${retParam}`;
-
-    // Проставляем href кнопкам
-    document.addEventListener("DOMContentLoaded", () => {
-      const aApp = document.getElementById("openTgApp");
-      const aWeb = document.getElementById("openTgWeb");
-      if (aApp) aApp.href = tgAppUrl;
-      if (aWeb) aWeb.href = tgWebUrl;
-    });
-
-    // Официальный виджет Telegram (redirect-режим) — как запасной вариант
-    (function injectTelegramWidget () {
-      const s = document.createElement('script');
-      s.async = true;
-      s.src = 'https://telegram.org/js/telegram-widget.js?22';
-      s.setAttribute('data-telegram-login', BOT_USERNAME);
-      s.setAttribute('data-size', 'large');
-      s.setAttribute('data-userpic', 'false');
-      s.setAttribute('data-request-access', 'write');
-      s.setAttribute('data-auth-url', window.location.origin + '/auth/telegram-redirect');
-      document.getElementById('loginBox').appendChild(s);
-    })();
-  </script>
-
-  <script src="/app.js"></script>
+  <script src="/app.js" defer></script>
   <noscript>Для входа включите JavaScript.</noscript>
 </body>
 </html>
