@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RBX — вход</title>
+  <meta name="color-scheme" content="dark" />
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    html,body{height:100%;margin:0;background:#0b0f17;color:#eaeef7;
+      display:flex;align-items:center;justify-content:center;font:16px system-ui,Segoe UI,Roboto,Arial}
+  </style>
+</head>
+<body>
+  Авторизуем…
+  <script>
+    const initData = window.Telegram?.WebApp?.initData || "";
+    fetch("/webapp-auth", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ initData })
+    })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(await r.text());
+        // вернём пользователя на главную сайта внутри Telegram
+        location.replace("/");
+      })
+      .catch(e => alert("Auth error: " + e.message));
+  </script>
+</body>
+</html>
