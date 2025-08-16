@@ -1,4 +1,4 @@
-// server.js — Telegram Login Widget + Telegram WebApp, сессии, уведомления админу, админ-таблица (NeDB) + ВЕБХУК БОТА
+// server.js — Telegram Login Widget + Telegram WebApp, сессии, уведомления админу, админ-таблица (NeDB) + ВЕБХУК БОТА (inline web_app)
 
 const express = require("express");
 const crypto = require("crypto");
@@ -146,9 +146,7 @@ async function tgSend(chatId, payload) {
 }
 async function notifyAdmin(text) {
   if (!ADMIN_ID) return;
-  await tgSend(ADMIN_ID, {
-    text, parse_mode: "HTML", disable_web_page_preview: true
-  });
+  await tgSend(ADMIN_ID, { text, parse_mode: "HTML", disable_web_page_preview: true });
 }
 
 async function completeLogin(req, source, user) {
@@ -192,12 +190,10 @@ async function completeLogin(req, source, user) {
 
 // --- Middleware -------------------------------------------------------------
 app.set("trust proxy", 1);
-
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(morgan("tiny"));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
-
 app.use(session({
   secret: SESSION_SECRET,
   resave: false,
@@ -232,7 +228,6 @@ app.get("/api/me", (req, res) => {
   if (!req.session.user) return res.status(401).json({ ok: false });
   res.json({ ok: true, user: req.session.user });
 });
-
 app.post("/logout", (req, res) => { req.session.destroy(() => res.json({ ok: true })); });
 app.get("/logout", (req, res) => { req.session.destroy(() => res.redirect("/")); });
 
@@ -258,7 +253,7 @@ ${rows.map(r=>{
 // --- Health -----------------------------------------------------------------
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
-// --- WEBHOOK БОТА -----------------------------------------------------------
+// --- WEBХУК БОТА ------------------------------------------------------------
 // 1) Установка вебхука (разово)
 app.get("/bot/set-webhook", async (req, res) => {
   if (!ADMIN_PASS || req.query.pass !== ADMIN_PASS) return res.status(401).send("Unauthorized");
@@ -274,7 +269,7 @@ app.get("/bot/set-webhook", async (req, res) => {
   res.json({ ok: true, result: j });
 });
 
-// 2) Собственно вебхук
+// 2) Сам вебхук — /start с INLINE web_app
 app.post("/bot/webhook", async (req, res) => {
   if (req.query.secret !== WEBHOOK_SECRET) return res.status(401).json({ ok: false });
   const update = req.body || {};
@@ -284,19 +279,17 @@ app.post("/bot/webhook", async (req, res) => {
   const chatId = msg.chat.id;
   const text = (msg.text || "").trim();
 
-  // Обработка /start
   if (text === "/start" || text.startsWith("/start ")) {
     const webAppUrl = `${PUBLIC_URL.replace(/\/$/,"")}/webapp.html`;
     await tgSend(chatId, {
-      text: "Нажми кнопку ниже, чтобы открыть приложение:",
+      text: "Нажми кнопку, чтобы открыть приложение:",
       reply_markup: {
-        keyboard: [[{ text: "Открыть приложение", web_app: { url: webAppUrl } }]],
-        resize_keyboard: true,
-        one_time_keyboard: true
+        inline_keyboard: [[
+          { text: "Открыть приложение", web_app: { url: webAppUrl } }
+        ]]
       }
     });
   }
-
   res.json({ ok: true });
 });
 
