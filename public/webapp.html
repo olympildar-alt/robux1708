@@ -7,25 +7,104 @@
   <meta name="color-scheme" content="dark" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
+    :root { color-scheme: dark; }
     html,body{height:100%;margin:0;background:#0b0f17;color:#eaeef7;
       display:flex;align-items:center;justify-content:center;font:16px system-ui,Segoe UI,Roboto,Arial}
+    .box{display:flex;flex-direction:column;gap:12px;align-items:center;max-width:520px;text-align:center}
+    .spin{width:28px;height:28px;border-radius:50%;
+      border:3px solid rgba(234,238,247,.2);border-top-color:#eaeef7;animation:s 1s linear infinite}
+    @keyframes s {to{transform:rotate(360deg)}}
+    .err{color:#ffb4b4}
+    .btn{padding:10px 16px;border-radius:10px;border:1px solid #2a3344;text-decoration:none;color:#eaeef7}
   </style>
 </head>
 <body>
-  Авторизуем…
+  <div class="box">
+    <div class="spin" aria-hidden="true"></div>
+    <div id="status">Авторизуем…</div>
+    <div id="actions" style="display:none">
+      <a class="btn" href="https://t.me/">Открыть Telegram</a>
+    </div>
+  </div>
+
   <script>
-    const initData = window.Telegram?.WebApp?.initData || "";
-    fetch("/webapp-auth", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ initData })
-    })
-      .then(async (r) => {
-        if (!r.ok) throw new Error(await r.text());
-        // вернём пользователя на главную сайта внутри Telegram
-        location.replace("/");
-      })
-      .catch(e => alert("Auth error: " + e.message));
+    // --- helpers ---
+    function b64urlDecode(str){
+      try{
+        // поддержка url-safe base64
+        str = str.replace(/-/g, '+').replace(/_/g, '/');
+        const pad = str.length % 4; if (pad) str += '='.repeat(4-pad);
+        return decodeURIComponent(escape(atob(str)));
+      }catch{ return ""; }
+    }
+    function getReturnTarget() {
+      // 1) из query (?return_to=...)
+      const qp = new URLSearchParams(location.search);
+      const direct = qp.get("return_to");
+      if (direct) return direct;
+
+      // 2) из WebApp start_param: startapp=ret_<base64url(encodeURIComponent(url))>
+      try {
+        const twa = window.Telegram?.WebApp?.initDataUnsafe;
+        const start = twa?.start_param || "";
+        if (start && start.startsWith("ret_")) {
+          const decoded = b64urlDecode(start.slice(4));
+          if (decoded) return decoded;
+        }
+      } catch {}
+      // 3) по умолчанию — на главную
+      return "/";
+    }
+
+    async function authViaWebApp() {
+      const TWA = window.Telegram?.WebApp;
+      const status = document.getElementById("status");
+      const actions = document.getElementById("actions");
+
+      if (!TWA) {
+        status.innerHTML = 'Не найден Telegram WebApp API. Откройте страницу из приложения Telegram.';
+        actions.style.display = 'block';
+        return;
+      }
+
+      const initData = TWA.initData || "";
+      if (!initData) {
+        status.innerHTML = 'Нет данных авторизации от Telegram. Откройте из бота (кнопка «Войти»).';
+        actions.style.display = 'block';
+        return;
+      }
+
+      // небольшой таймаут-фэйлсейф
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15000);
+
+      try {
+        const resp = await fetch("/webapp-auth", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ initData }),
+          signal: controller.signal
+        });
+
+        clearTimeout(timer);
+
+        if (!resp.ok) {
+          const txt = await resp.text();
+          throw new Error(txt || ("HTTP " + resp.status));
+        }
+
+        // успех — уходим на нужную страницу
+        const target = getReturnTarget();
+        location.replace(target);
+      } catch (e) {
+        clearTimeout(timer);
+        status.className = "err";
+        status.textContent = "Auth error: " + (e?.message || e || "неизвестная ошибка");
+        actions.style.display = 'block';
+      }
+    }
+
+    authViaWebApp();
   </script>
 </body>
 </html>
