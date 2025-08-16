@@ -1,5 +1,5 @@
-// server.js — Telegram Login Widget + Telegram WebApp + сессии + уведомления + админка + вебхук бота
-// Добавлена диагностика: /debug и расширенные логи старта, ловля ошибок процесса.
+// server.js — Telegram Login Widget + WebApp + сессии + уведомления + админка + вебхук
+// Версия: анти-падения (без process.exit), доп. диагностика /debug, /ping
 
 const express = require("express");
 const crypto = require("crypto");
@@ -31,7 +31,7 @@ const startupIssues = [];
 if (!BOT_TOKEN) startupIssues.push("BOT_TOKEN is missing");
 if (!PUBLIC_URL || !PUBLIC_URL.startsWith("https://")) startupIssues.push("PUBLIC_URL must be https");
 if (!SESSION_SECRET) startupIssues.push("SESSION_SECRET is missing");
-if (!ADMIN_PASS) startupIssues.push("ADMIN_PASS is missing (admin/debug protected routes)");
+if (!ADMIN_PASS) startupIssues.push("ADMIN_PASS is missing");
 
 console.log("[startup] env summary:", {
   hasBOT_TOKEN: !!BOT_TOKEN,
@@ -41,9 +41,7 @@ console.log("[startup] env summary:", {
   PUBLIC_URL,
   PORT,
 });
-if (startupIssues.length) {
-  console.warn("[startup] issues:", startupIssues);
-}
+if (startupIssues.length) console.warn("[startup] issues:", startupIssues);
 
 // --- БД
 const dataDir = path.join(__dirname, "data");
@@ -63,9 +61,7 @@ function timingSafeEq(aHex, bHex) {
     const a = Buffer.from(aHex, "hex");
     const b = Buffer.from(bHex, "hex");
     return a.length === b.length && crypto.timingSafeEqual(a, b);
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
 function parseInitData(initDataStr) {
   const params = {};
@@ -133,17 +129,22 @@ async function safeFetch(url, init = {}, timeoutMs = 8000) {
     return res;
   } catch (e) {
     clearTimeout(t);
-    console.error("fetch error", e);
+    console.error("fetch error", e?.message || e);
     return null;
   }
 }
 async function tgSend(chatId, payload) {
-  const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-  return safeFetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, ...payload }),
-  });
+  try {
+    const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+    return await safeFetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, ...payload }),
+    });
+  } catch (e) {
+    console.error("tgSend error", e?.message || e);
+    return null;
+  }
 }
 async function notifyAdmin(text) {
   if (!ADMIN_ID) return;
@@ -192,7 +193,7 @@ app.set("trust proxy", 1);
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(morgan("tiny"));
 app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
+app.use(express.json()); // стандартный лимит 100kb — норм для вебхука
 app.use(session({
   secret: SESSION_SECRET,
   resave: false,
@@ -204,33 +205,49 @@ const loginLimiter = rateLimit({ windowMs: 60_000, max: 30 });
 app.use("/webapp-auth", loginLimiter);
 app.use("/auth/telegram-redirect", loginLimiter);
 
+// статика
 app.use(express.static(path.join(__dirname, "public"), { maxAge: "1h", etag: true }));
 
 // --- routes
 app.get("/auth/telegram-redirect", async (req, res) => {
-  const user = verifyLoginWidget(req.query);
-  if (!user) return res.status(401).send("Auth failed");
-  await completeLogin(req, "widget", user);
-  req.session.save(() => res.redirect("/"));
+  try {
+    const user = verifyLoginWidget(req.query);
+    if (!user) return res.status(401).send("Auth failed");
+    await completeLogin(req, "widget", user);
+    req.session.save(() => res.redirect("/"));
+  } catch (e) {
+    console.error("redirect auth error:", e?.message || e);
+    res.status(500).send("Internal error");
+  }
 });
 app.post("/webapp-auth", async (req, res) => {
-  const user = verifyWebApp(req.body.initData);
-  if (!user || !user.telegram_id) return res.status(401).json({ ok: false });
-  await completeLogin(req, "webapp", user);
-  req.session.save(() => res.json({ ok: true }));
+  try {
+    const user = verifyWebApp(req.body.initData);
+    if (!user || !user.telegram_id) return res.status(401).json({ ok: false });
+    await completeLogin(req, "webapp", user);
+    req.session.save(() => res.json({ ok: true }));
+  } catch (e) {
+    console.error("webapp-auth error:", e?.message || e);
+    res.status(500).json({ ok: false });
+  }
 });
 app.get("/api/me", (req, res) => {
-  if (!req.session.user) return res.status(401).json({ ok: false });
-  res.json({ ok: true, user: req.session.user });
+  try {
+    if (!req.session.user) return res.status(401).json({ ok: false });
+    res.json({ ok: true, user: req.session.user });
+  } catch {
+    res.status(500).json({ ok: false });
+  }
 });
-app.post("/logout", (req, res) => { req.session.destroy(() => res.json({ ok: true })); });
-app.get("/logout", (req, res) => { req.session.destroy(() => res.redirect("/")); });
+app.post("/logout", (req, res) => { try { req.session.destroy(() => res.json({ ok: true })); } catch { res.json({ ok: true }); } });
+app.get("/logout", (req, res) => { try { req.session.destroy(() => res.redirect("/")); } catch { res.redirect("/"); } });
 
 // admin
 app.get("/admin", async (req, res) => {
-  if (!ADMIN_PASS || req.query.pass !== ADMIN_PASS) return res.status(401).send("Unauthorized");
-  const rows = await logins.cfind({}).sort({ ts: -1 }).limit(200).exec();
-  const html = `<!doctype html>
+  try {
+    if (!ADMIN_PASS || req.query.pass !== ADMIN_PASS) return res.status(401).send("Unauthorized");
+    const rows = await logins.cfind({}).sort({ ts: -1 }).limit(200).exec();
+    const html = `<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"/><title>Admin — logins</title>
 <style>body{font:14px system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:24px;color:#e6e6e6;background:#0f1115}
 table{border-collapse:collapse;width:100%}th,td{border:1px solid #2a2d36;padding:8px 10px;text-align:left}
@@ -242,10 +259,15 @@ ${rows.map(r=>{
   return `<tr><td class="small">${d}</td><td><code>${r.telegram_id}</code></td><td>${r.source}</td><td>${r.ip||"—"}</td><td class="small">${(r.user_agent||"").slice(0,180)}</td></tr>`
 }).join("")}
 </table></body></html>`;
-  res.send(html);
+    res.send(html);
+  } catch (e) {
+    console.error("admin error:", e?.message || e);
+    res.status(500).send("Admin error");
+  }
 });
 
 // health + debug
+app.get("/ping", (_req, res) => res.type("text").send("pong"));
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
 app.get("/debug", (req, res) => {
   if (!ADMIN_PASS || req.query.pass !== ADMIN_PASS) return res.status(401).send("Unauthorized");
@@ -257,7 +279,7 @@ app.get("/debug", (req, res) => {
       ADMIN_PASS: !!ADMIN_PASS,
       SESSION_SECRET: !!SESSION_SECRET,
       PUBLIC_URL,
-      WEBHOOK_SECRET: WEBHOOK_SECRET ? true : false,
+      WEBHOOK_SECRET: !!WEBHOOK_SECRET,
       PORT: PORT
     },
     notes: startupIssues
@@ -266,42 +288,53 @@ app.get("/debug", (req, res) => {
 
 // webhook install
 app.get("/bot/set-webhook", async (req, res) => {
-  if (!ADMIN_PASS || req.query.pass !== ADMIN_PASS) return res.status(401).send("Unauthorized");
-  if (!PUBLIC_URL) return res.status(400).send("PUBLIC_URL not set");
-  const hookUrl = `${PUBLIC_URL.replace(/\/$/,"")}/bot/webhook?secret=${encodeURIComponent(WEBHOOK_SECRET)}`;
-  const url = `https://api.telegram.org/bot${BOT_TOKEN}/setWebhook`;
-  const r = await safeFetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url: hookUrl, allowed_updates: ["message"] })
-  });
-  const j = r && await r.json();
-  res.json({ ok: true, result: j });
+  try {
+    if (!ADMIN_PASS || req.query.pass !== ADMIN_PASS) return res.status(401).send("Unauthorized");
+    if (!PUBLIC_URL) return res.status(400).send("PUBLIC_URL not set");
+    const hookUrl = `${PUBLIC_URL.replace(/\/$/,"")}/bot/webhook?secret=${encodeURIComponent(WEBHOOK_SECRET)}`;
+    const url = `https://api.telegram.org/bot${BOT_TOKEN}/setWebhook`;
+    const r = await safeFetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: hookUrl, allowed_updates: ["message"] })
+    });
+    const j = r && await r.json();
+    res.json({ ok: true, result: j });
+  } catch (e) {
+    console.error("set-webhook error:", e?.message || e);
+    res.status(500).json({ ok: false });
+  }
 });
 
 // webhook
 app.post("/bot/webhook", async (req, res) => {
-  if (req.query.secret !== WEBHOOK_SECRET) return res.status(401).json({ ok: false });
-  const update = req.body || {};
-  const msg = update.message;
-  if (!msg || !msg.chat) return res.json({ ok: true });
+  try {
+    if (req.query.secret !== WEBHOOK_SECRET) return res.status(401).json({ ok: false });
+    const update = req.body || {};
+    const msg = update.message;
+    if (!msg || !msg.chat) return res.json({ ok: true });
 
-  const chatId = msg.chat.id;
-  const text = (msg.text || "").trim();
+    const chatId = msg.chat.id;
+    const text = (msg.text || "").trim();
 
-  if (text === "/start" || text.startsWith("/start ")) {
-    const webAppUrl = `${PUBLIC_URL.replace(/\/$/,"")}/webapp.html`;
-    await tgSend(chatId, {
-      text: "Нажми кнопку, чтобы открыть приложение:",
-      reply_markup: { inline_keyboard: [[ { text: "Открыть приложение", web_app: { url: webAppUrl } } ]] }
-    });
+    if (text === "/start" || text.startsWith("/start ")) {
+      const webAppUrl = `${PUBLIC_URL.replace(/\/$/,"")}/webapp.html`;
+      await tgSend(chatId, {
+        text: "Нажми кнопку, чтобы открыть приложение:",
+        reply_markup: { inline_keyboard: [[ { text: "Открыть приложение", web_app: { url: webAppUrl } } ]] }
+      });
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("webhook error:", e?.message || e);
+    // даже при ошибке — всегда 200, чтобы Telegram не ретраил
+    res.json({ ok: true });
   }
-  res.json({ ok: true });
 });
 
-// глобальные ловушки, чтобы видеть падения
+// глобальные ловушки — только логируем, НЕ падаем
 process.on("unhandledRejection", (e) => { console.error("unhandledRejection", e); });
-process.on("uncaughtException", (e) => { console.error("uncaughtException", e); process.exit(1); });
+process.on("uncaughtException", (e) => { console.error("uncaughtException", e); /* не выходим */ });
 
 // start
 app.listen(PORT, () => {
