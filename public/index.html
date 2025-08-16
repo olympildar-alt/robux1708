@@ -23,8 +23,15 @@
   <main class="main">
     <section class="hero">
       <h1>Быстрые сделки. Надёжный вход.</h1>
-      <p class="sub">Авторизация через Telegram — без паролей и лишних формальностей.</p>
+      <p class="sub">Выберите удобный способ авторизации через Telegram.</p>
 
+      <!-- Кнопки быстрого входа через приложение Telegram (WebApp) -->
+      <div class="login-actions" style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center;margin-bottom:12px">
+        <a id="openTgApp" class="btn">Быстрый вход (приложение Telegram)</a>
+        <a id="openTgWeb" class="btn-outline" target="_blank" rel="noopener">Открыть в Telegram</a>
+      </div>
+
+      <!-- Официальный виджет Telegram (fallback, если не открыли приложение) -->
       <div id="loginBox" class="login-box"></div>
 
       <!-- Блок профиля после успешного входа -->
@@ -42,11 +49,11 @@
     <section class="cards">
       <div class="card">
         <h3>Моментальный вход</h3>
-        <p>Используйте ваш Telegram для входа за пару секунд.</p>
+        <p>Через приложение Telegram — одним нажатием.</p>
       </div>
       <div class="card">
         <h3>Уведомления</h3>
-        <p>Мы уведомим администратора о каждом входе.</p>
+        <p>Администратор получает оповещение о каждом входе.</p>
       </div>
       <div class="card">
         <h3>Приватность</h3>
@@ -61,18 +68,36 @@
 
   <script>
     // имя бота (без @)
-    window.BOT_USERNAME = "robuxtransferbot";
+    const BOT_USERNAME = "robuxtransferbot";
 
-    // динамически добавляем Telegram Login Widget и подставляем корректный абсолютный URL
+    // Страница возврата после WebApp-логина (текущая страница)
+    const returnUrl = window.location.origin + window.location.pathname;
+    // Кодируем для передачи в startapp (ret_<base64>)
+    const retParam = "ret_" + btoa(encodeURIComponent(returnUrl));
+
+    // Ссылки для открытия бота
+    // tg:// — открывает приложение Telegram (мобильное/десктопное)
+    const tgAppUrl = `tg://resolve?domain=${BOT_USERNAME}&startapp=${retParam}`;
+    // https://t.me — fallback, если протокол tg:// не сработал
+    const tgWebUrl = `https://t.me/${BOT_USERNAME}?startapp=${retParam}`;
+
+    // Проставляем href кнопкам
+    document.addEventListener("DOMContentLoaded", () => {
+      const aApp = document.getElementById("openTgApp");
+      const aWeb = document.getElementById("openTgWeb");
+      if (aApp) aApp.href = tgAppUrl;
+      if (aWeb) aWeb.href = tgWebUrl;
+    });
+
+    // Официальный виджет Telegram (redirect-режим) — как запасной вариант
     (function injectTelegramWidget () {
       const s = document.createElement('script');
       s.async = true;
       s.src = 'https://telegram.org/js/telegram-widget.js?22';
-      s.setAttribute('data-telegram-login', window.BOT_USERNAME);
+      s.setAttribute('data-telegram-login', BOT_USERNAME);
       s.setAttribute('data-size', 'large');
       s.setAttribute('data-userpic', 'false');
       s.setAttribute('data-request-access', 'write');
-      // важное место: абсолютный адрес на текущем домене (Render/локально)
       s.setAttribute('data-auth-url', window.location.origin + '/auth/telegram-redirect');
       document.getElementById('loginBox').appendChild(s);
     })();
