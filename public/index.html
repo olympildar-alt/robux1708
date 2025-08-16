@@ -25,16 +25,7 @@
       <h1>Быстрые сделки. Надёжный вход.</h1>
       <p class="sub">Авторизация через Telegram — без паролей и лишних формальностей.</p>
 
-      <div id="loginBox" class="login-box">
-        <!-- РЕЖИМ РЕДИРЕКТА: сервер примет данные на /auth/telegram-redirect -->
-        <script async src="https://telegram.org/js/telegram-widget.js?22"
-          data-telegram-login="robuxtransferbot"
-          data-size="large"
-          data-userpic="false"
-          data-auth-url="/auth/telegram-redirect"
-          data-request-access="write">
-        </script>
-      </div>
+      <div id="loginBox" class="login-box"></div>
 
       <!-- Блок профиля после успешного входа -->
       <div id="me" class="me hidden">
@@ -68,7 +59,25 @@
     <span>© 2025 RBX Exchange</span>
   </footer>
 
-  <script>window.BOT_USERNAME = "robuxtransferbot";</script>
+  <script>
+    // имя бота (без @)
+    window.BOT_USERNAME = "robuxtransferbot";
+
+    // динамически добавляем Telegram Login Widget и подставляем корректный абсолютный URL
+    (function injectTelegramWidget () {
+      const s = document.createElement('script');
+      s.async = true;
+      s.src = 'https://telegram.org/js/telegram-widget.js?22';
+      s.setAttribute('data-telegram-login', window.BOT_USERNAME);
+      s.setAttribute('data-size', 'large');
+      s.setAttribute('data-userpic', 'false');
+      s.setAttribute('data-request-access', 'write');
+      // важное место: абсолютный адрес на текущем домене (Render/локально)
+      s.setAttribute('data-auth-url', window.location.origin + '/auth/telegram-redirect');
+      document.getElementById('loginBox').appendChild(s);
+    })();
+  </script>
+
   <script src="/app.js"></script>
   <noscript>Для входа включите JavaScript.</noscript>
 </body>
