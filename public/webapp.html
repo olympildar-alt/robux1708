@@ -3,20 +3,21 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Telegram WebApp Auth</title>
+  <title>Авторизация…</title>
   <link rel="stylesheet" href="/style.css" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     .center { display:flex; align-items:center; justify-content:center; min-height:100vh; }
     .link { color:#fff; text-decoration:underline; }
+    .muted { color:#a2a7b3; }
   </style>
 </head>
 <body class="center">
   <div class="card" style="max-width:520px">
     <h2 id="title">Авторизация…</h2>
-    <p class="muted" id="status">Проверяем подпись Telegram</p>
+    <p class="muted" id="status">Секунду, перенаправляем вас на сайт…</p>
     <p class="muted" id="fallback" style="display:none">
-      Если окно не закрылось автоматически — <a id="go" class="link" href="/">перейдите на сайт</a>.
+      Если переход не открылся — <a id="go" class="link" href="/">нажмите здесь</a>.
     </p>
   </div>
 
@@ -24,15 +25,19 @@
     (async () => {
       const tg = window.Telegram?.WebApp;
       const $ = (id) => document.getElementById(id);
-      tg?.expand();
 
-      // Куда переносить пользователя после входа
-      const targetUrl = (location.origin || "https://robux1708.onrender.com") + "/";
+      const params = new URLSearchParams(location.search);
+      // Куда вернём пользователя (приходит из кнопки бота как ?to=...)
+      const targetUrl = params.get("to") || (location.origin + "/");
+
+      function showFallback() {
+        $("fallback").style.display = "block";
+        $("go").href = targetUrl;
+      }
 
       if (!tg || !tg.initData) {
         $("status").textContent = "Откройте страницу из Telegram WebApp.";
-        $("fallback").style.display = "block";
-        $("go").href = targetUrl;
+        showFallback();
         return;
       }
 
@@ -43,33 +48,33 @@
           credentials: "include",
           body: JSON.stringify({ initData: tg.initData })
         });
-
         const data = await res.json();
+
         if (data.ok) {
           $("title").textContent = "Готово!";
-          $("status").textContent = "Перенаправляем на сайт…";
+          $("status").textContent = "Сейчас откроем сайт в браузере…";
 
-          // 1) открыть сайт во внешнем браузере
-          try { tg.openLink(targetUrl); } catch {}
+          // 1) открыть во внешнем браузере (мобайл/десктоп)
+          try { tg.openLink(targetUrl, { try_instant_view: false }); } catch {}
 
-          // 2) закрыть WebView (даже если openLink не сработал)
-          setTimeout(() => { try { tg.close(); } catch {} }, 300);
+          // 2) на всякий — уйти на сайт прямо в WebView
+          try { window.location.replace(targetUrl); } catch {}
 
-          // 3) запасной вариант — показать ссылку
-          setTimeout(() => {
-            $("fallback").style.display = "block";
-            $("go").href = targetUrl;
-          }, 1200);
+          // 3) резервный вариант (если 1–2 не сработали): фоновой new tab
+          setTimeout(() => { try { window.open(targetUrl, "_blank"); } catch {} }, 400);
 
+          // 4) закрыть WebView немного позже
+          setTimeout(() => { try { tg.close(); } catch {} }, 700);
+
+          // 5) показать ссылку, если ничего не произошло
+          setTimeout(showFallback, 1500);
         } else {
           $("status").textContent = "Не удалось авторизоваться.";
-          $("fallback").style.display = "block";
-          $("go").href = targetUrl;
+          showFallback();
         }
       } catch (e) {
         $("status").textContent = "Ошибка сети.";
-        $("fallback").style.display = "block";
-        $("go").href = targetUrl;
+        showFallback();
       }
     })();
   </script>
