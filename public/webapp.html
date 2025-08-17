@@ -7,9 +7,9 @@
   <link rel="stylesheet" href="/style.css" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    .center { display:flex; align-items:center; justify-content:center; min-height:100vh; }
-    .link { color:#fff; text-decoration:underline; }
-    .muted { color:#a2a7b3; }
+    .center{display:flex;align-items:center;justify-content:center;min-height:100vh}
+    .link{color:#fff;text-decoration:underline}
+    .muted{color:#a2a7b3}
   </style>
 </head>
 <body class="center">
@@ -25,20 +25,15 @@
     (async () => {
       const tg = window.Telegram?.WebApp;
       const $ = (id) => document.getElementById(id);
-
       const params = new URLSearchParams(location.search);
-      // Куда вернём пользователя (приходит из кнопки бота как ?to=...)
-      const targetUrl = params.get("to") || (location.origin + "/");
+      const defaultTarget = (location.origin || "https://robux1708.onrender.com") + "/";
+      const targetBase = params.get("to") || defaultTarget;
 
-      function showFallback() {
-        $("fallback").style.display = "block";
-        $("go").href = targetUrl;
-      }
+      function showFallback(url){ $("fallback").style.display="block"; $("go").href=url; }
 
       if (!tg || !tg.initData) {
         $("status").textContent = "Откройте страницу из Telegram WebApp.";
-        showFallback();
-        return;
+        return showFallback(defaultTarget);
       }
 
       try {
@@ -51,30 +46,24 @@
         const data = await res.json();
 
         if (data.ok) {
+          // Если пришёл одноразовый токен — возвращаемся во внешний браузер по /sso?token=...
+          const finalUrl = data.sso ? (defaultTarget.replace(/\/$/,"") + "/sso?token=" + encodeURIComponent(data.sso)) : targetBase;
+
           $("title").textContent = "Готово!";
           $("status").textContent = "Сейчас откроем сайт в браузере…";
 
-          // 1) открыть во внешнем браузере (мобайл/десктоп)
-          try { tg.openLink(targetUrl, { try_instant_view: false }); } catch {}
-
-          // 2) на всякий — уйти на сайт прямо в WebView
-          try { window.location.replace(targetUrl); } catch {}
-
-          // 3) резервный вариант (если 1–2 не сработали): фоновой new tab
-          setTimeout(() => { try { window.open(targetUrl, "_blank"); } catch {} }, 400);
-
-          // 4) закрыть WebView немного позже
+          try { tg.openLink(finalUrl, { try_instant_view: false }); } catch {}
+          try { window.location.replace(finalUrl); } catch {}
+          setTimeout(() => { try { window.open(finalUrl, "_blank"); } catch {} }, 400);
           setTimeout(() => { try { tg.close(); } catch {} }, 700);
-
-          // 5) показать ссылку, если ничего не произошло
-          setTimeout(showFallback, 1500);
+          setTimeout(() => showFallback(finalUrl), 1500);
         } else {
           $("status").textContent = "Не удалось авторизоваться.";
-          showFallback();
+          showFallback(targetBase);
         }
       } catch (e) {
         $("status").textContent = "Ошибка сети.";
-        showFallback();
+        showFallback(targetBase);
       }
     })();
   </script>
