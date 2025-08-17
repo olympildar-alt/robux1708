@@ -1,42 +1,77 @@
-async function refreshMe() {
+function qs(id) { return document.getElementById(id); }
+
+function injectTelegramLoginWidget() {
+  const container = qs("tg-widget");
+  container.innerHTML = ""; // перерисовываем на всякий случай
+  if (!window.BOT_USERNAME) {
+    container.innerHTML = `<div class="warn">Укажите BOT_USERNAME в index.html</div>`;
+    return;
+  }
+  const s = document.createElement("script");
+  s.async = true;
+  s.src = "https://telegram.org/js/telegram-widget.js?22";
+  s.setAttribute("data-telegram-login", window.BOT_USERNAME);
+  s.setAttribute("data-size", "large");
+  s.setAttribute("data-userpic", "false");
+  s.setAttribute("data-request-access", "write");
+  s.setAttribute("data-auth-url", "/auth/telegram-redirect");
+  container.appendChild(s);
+}
+
+async function getMe() {
   try {
     const res = await fetch("/api/me", { credentials: "include" });
-    if (!res.ok) throw new Error("not ok");
+    if (!res.ok) return null;
     const data = await res.json();
-    if (data.ok) {
-      const me = data.user || {};
-      const el = document.getElementById("me");
-      el.innerHTML = `
-        <div class="me">
-          ${me.photo_url ? `<img src="${me.photo_url}" alt="avatar">` : ""}
-          <div>
-            <div><b>${me.first_name || ""}</b> ${me.username ? "@" + me.username : ""}</div>
-            <div class="muted small">ID: ${me.id}</div>
-          </div>
-        </div>`;
-      document.getElementById("me-card").hidden = false;
-    } else {
-      document.getElementById("me-card").hidden = true;
-    }
+    return data.ok ? data.user : null;
   } catch {
-    document.getElementById("me-card").hidden = true;
+    return null;
   }
 }
 
-document.addEventListener("DOMContentLoaded", () => {
-  // Кнопка "Открыть бота"
-  const link = document.getElementById("open-bot");
-  if (window.BOT_USERNAME) {
-    link.href = `https://t.me/${window.BOT_USERNAME}`;
-  } else {
-    link.href = "https://t.me/";
-  }
+function showAuthedUI(user) {
+  // прячем авторизацию, показываем приложение
+  qs("auth").hidden = true;
+  qs("app").hidden = false;
 
-  // Выход
-  document.getElementById("logout")?.addEventListener("click", async () => {
+  // приветствие
+  qs("hello-text").textContent =
+    `Вы вошли как ${user.first_name || ""}${user.username ? " @" + user.username : ""} (ID: ${user.id}).`;
+
+  // чип в хедере
+  const chip = qs("user-chip");
+  const avatar = qs("user-avatar");
+  const name = qs("user-name");
+
+  if (user.photo_url) {
+    avatar.src = user.photo_url;
+    avatar.style.display = "inline-block";
+  } else {
+    avatar.style.display = "none";
+  }
+  name.textContent = user.first_name || user.username || ("ID " + user.id);
+  chip.hidden = false;
+}
+
+function showLoginUI() {
+  qs("app").hidden = true;
+  qs("auth").hidden = false;
+  injectTelegramLoginWidget();
+}
+
+document.addEventListener("DOMContentLoaded", async () => {
+  // ссылка "Открыть бота"
+  const link = qs("open-bot");
+  link.href = window.BOT_USERNAME ? `https://t.me/${window.BOT_USERNAME}` : "https://t.me/";
+
+  // выход
+  qs("logout").addEventListener("click", async () => {
     await fetch("/logout", { method: "POST", credentials: "include" });
     location.reload();
   });
 
-  refreshMe();
+  // стартовая проверка
+  const user = await getMe();
+  if (user) showAuthedUI(user);
+  else showLoginUI();
 });
