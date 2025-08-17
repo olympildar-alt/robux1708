@@ -1,5 +1,5 @@
 // server.js — Telegram Login Widget + WebApp + сессии + уведомления + админка + вебхук
-// Версия: надёжная проверка WebApp initData (URLSearchParams) + расширенная диагностика
+// Совместимость с nedb-promises без cfind(): сортировка/лимиты через массивы
 
 const express = require("express");
 const crypto = require("crypto");
@@ -66,7 +66,7 @@ function timingSafeEq(aHex, bHex) {
   } catch { return false; }
 }
 
-// Проверка Telegram Login Widget (redirect)
+// Проверка Login Widget
 function verifyLoginWidget(query) {
   const data = { ...query };
   const { hash } = data;
@@ -91,35 +91,30 @@ function verifyLoginWidget(query) {
   };
 }
 
-// Проверка Telegram WebApp initData — СТРОГО по докам
+// Проверка WebApp initData — строго по докам
 function verifyWebApp(initDataStr) {
   if (!initDataStr) return { ok:false, reason:"no_initData" };
 
-  // 1) Разбираем как есть
   const usp = new URLSearchParams(initDataStr);
   const entries = [];
   for (const [k, v] of usp.entries()) {
     if (k === "hash") continue;
     entries.push([k, v]);
   }
-  // 2) Сортируем по ключу и формируем data_check_string
-  entries.sort(([a], [b]) => a.localeCompare(b));
-  const dataCheckString = entries.map(([k, v]) => `${k}=${v}`).join("\n");
+  entries.sort(([a],[b]) => a.localeCompare(b));
+  const dataCheckString = entries.map(([k,v]) => `${k}=${v}`).join("\n");
 
   const hash = usp.get("hash");
   if (!hash) return { ok:false, reason:"no_hash" };
 
-  // 3) secret = HMAC_SHA256("WebAppData", BOT_TOKEN)
   const secret = crypto.createHmac("sha256", "WebAppData").update(BOT_TOKEN).digest();
   const expected = crypto.createHmac("sha256", secret).update(dataCheckString).digest("hex");
   if (!timingSafeEq(hash, expected)) return { ok:false, reason:"hash_mismatch" };
 
-  // 4) проверка актуальности
   const nowSec = Math.floor(Date.now()/1000);
   const authDate = Number(usp.get("auth_date") || 0);
   if (!(authDate > 0 && nowSec - authDate < TEN_MIN)) return { ok:false, reason:"stale_auth_date" };
 
-  // 5) user — корректный объект
   let user = {};
   try { user = JSON.parse(usp.get("user") || "{}"); } catch { user = {}; }
 
@@ -172,6 +167,7 @@ async function completeLogin(req, source, user) {
     { $set: { ...user, updated_at: Date.now() } },
     { upsert: true }
   );
+
   const loginDoc = {
     telegram_id: user.telegram_id,
     source,
@@ -181,8 +177,11 @@ async function completeLogin(req, source, user) {
   };
   await logins.insert(loginDoc);
 
-  const lastArr = await logins.cfind({ telegram_id: user.telegram_id }).sort({ ts: -1 }).limit(2).exec();
-  const prev = lastArr[1];
+  // >>> Без cfind: берём все, сортируем в памяти и берём предыдущий
+  const arr = await logins.find({ telegram_id: user.telegram_id });
+  const sorted = arr.sort((a,b) => (b.ts||0) - (a.ts||0));
+  const prev = sorted[1]; // предыдущая запись
+
   const cooldown = NOTIFY_COOLDOWN_MIN * 60 * 1000;
   const shouldNotify = !prev || Date.now() - (prev?.ts || 0) > cooldown;
 
@@ -263,11 +262,13 @@ app.get("/api/me", (req, res) => {
 app.post("/logout", (req, res) => { try { req.session.destroy(() => res.json({ ok: true })); } catch { res.json({ ok: true }); } });
 app.get("/logout", (req, res) => { try { req.session.destroy(() => res.redirect("/")); } catch { res.redirect("/"); } });
 
-// admin
+// admin (без cfind)
 app.get("/admin", async (req, res) => {
   try {
     if (!ADMIN_PASS || req.query.pass !== ADMIN_PASS) return res.status(401).send("Unauthorized");
-    const rows = await logins.cfind({}).sort({ ts: -1 }).limit(200).exec();
+    const all = await logins.find({});
+    const rows = all.sort((a,b) => (b.ts||0) - (a.ts||0)).slice(0, 200);
+
     const html = `<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"/><title>Admin — logins</title>
 <style>body{font:14px system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:24px;color:#e6e6e6;background:#0f1115}
@@ -353,9 +354,9 @@ app.post("/bot/webhook", async (req, res) => {
   }
 });
 
-// глобальные ловушки — логируем, но НЕ падаем
+// ловушки — логируем, но НЕ падаем
 process.on("unhandledRejection", (e) => { console.error("unhandledRejection", e); });
-process.on("uncaughtException", (e) => { console.error("uncaughtException", e); /* живём */ });
+process.on("uncaughtException", (e) => { console.error("uncaughtException", e); });
 
 app.listen(PORT, () => {
   console.log(`Server running on 0.0.0.0:${PORT}`);
