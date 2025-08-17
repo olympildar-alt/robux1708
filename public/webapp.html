@@ -6,18 +6,33 @@
   <title>Telegram WebApp Auth</title>
   <link rel="stylesheet" href="/style.css" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    .center { display:flex; align-items:center; justify-content:center; min-height:100vh; }
+    .link { color:#fff; text-decoration:underline; }
+  </style>
 </head>
 <body class="center">
   <div class="card" style="max-width:520px">
-    <h2>Авторизация…</h2>
+    <h2 id="title">Авторизация…</h2>
     <p class="muted" id="status">Проверяем подпись Telegram</p>
+    <p class="muted" id="fallback" style="display:none">
+      Если окно не закрылось автоматически — <a id="go" class="link" href="/">перейдите на сайт</a>.
+    </p>
   </div>
 
   <script>
-    async function authViaWebApp() {
+    (async () => {
       const tg = window.Telegram?.WebApp;
+      const $ = (id) => document.getElementById(id);
+      tg?.expand();
+
+      // Куда переносить пользователя после входа
+      const targetUrl = (location.origin || "https://robux1708.onrender.com") + "/";
+
       if (!tg || !tg.initData) {
-        document.getElementById("status").textContent = "Откройте страницу из Telegram WebApp.";
+        $("status").textContent = "Откройте страницу из Telegram WebApp.";
+        $("fallback").style.display = "block";
+        $("go").href = targetUrl;
         return;
       }
 
@@ -28,18 +43,35 @@
           credentials: "include",
           body: JSON.stringify({ initData: tg.initData })
         });
+
         const data = await res.json();
         if (data.ok) {
-          document.getElementById("status").textContent = "Готово! Можно закрывать.";
-          try { tg.close(); } catch {}
+          $("title").textContent = "Готово!";
+          $("status").textContent = "Перенаправляем на сайт…";
+
+          // 1) открыть сайт во внешнем браузере
+          try { tg.openLink(targetUrl); } catch {}
+
+          // 2) закрыть WebView (даже если openLink не сработал)
+          setTimeout(() => { try { tg.close(); } catch {} }, 300);
+
+          // 3) запасной вариант — показать ссылку
+          setTimeout(() => {
+            $("fallback").style.display = "block";
+            $("go").href = targetUrl;
+          }, 1200);
+
         } else {
-          document.getElementById("status").textContent = "Не удалось авторизоваться.";
+          $("status").textContent = "Не удалось авторизоваться.";
+          $("fallback").style.display = "block";
+          $("go").href = targetUrl;
         }
       } catch (e) {
-        document.getElementById("status").textContent = "Ошибка сети.";
+        $("status").textContent = "Ошибка сети.";
+        $("fallback").style.display = "block";
+        $("go").href = targetUrl;
       }
-    }
-    authViaWebApp();
+    })();
   </script>
 </body>
 </html>
