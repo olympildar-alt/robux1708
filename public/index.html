@@ -6,7 +6,7 @@
   <title>Robux — вход через Telegram</title>
   <link rel="stylesheet" href="/style.css" />
   <script>
-    /* Укажи имя бота без @ */
+    // Укажи имя своего бота без @
     window.BOT_USERNAME = "robuxtransferbot";
   </script>
 </head>
@@ -25,29 +25,23 @@
   </header>
 
   <main class="wrap">
-    <!-- Блок авторизации -->
     <section id="auth" class="grid gap16">
       <h1>Вход через Telegram</h1>
       <p class="muted">Два способа: через <b>кнопку Telegram</b> (redirect) или <b>WebApp</b> внутри бота.</p>
 
       <div class="card">
         <div id="tg-widget" class="mb12"></div>
-
         <a id="open-bot" class="button">Открыть бота</a>
         <p class="muted small">В боте нажми «Открыть веб-приложение», мы автоматически подтвердим вход.</p>
       </div>
     </section>
 
-    <!-- Основной функционал сайта (виден только после входа) -->
     <section id="app" class="grid gap16" hidden>
       <h1>Личный кабинет</h1>
-
       <div class="card">
-        <h3>Добро пожаловать! </h3>
+        <h3>Добро пожаловать!</h3>
         <p class="muted" id="hello-text"></p>
       </div>
-
-      <!-- пример «функционала» — сюда ставь свой контент -->
       <div class="card">
         <h3>Ваши действия</h3>
         <div class="actions">
