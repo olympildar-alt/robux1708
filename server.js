@@ -1,5 +1,5 @@
 // server.js — Telegram Login Widget + WebApp + сессии + уведомления + админка + вебхук
-// Версия: анти-падения (без process.exit), доп. диагностика /debug, /ping
+// Версия: надёжная проверка WebApp initData (URLSearchParams) + расширенная диагностика
 
 const express = require("express");
 const crypto = require("crypto");
@@ -25,6 +25,7 @@ const NOTIFY_COOLDOWN_MIN = Number(process.env.NOTIFY_COOLDOWN_MIN || 5);
 const WEBAPP_NOTIFY = Number(process.env.WEBAPP_NOTIFY ?? 1);
 const PUBLIC_URL = process.env.PUBLIC_URL || "";
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "change_me_secret";
+const DEBUG_AUTH = Number(process.env.DEBUG_AUTH || 0);
 
 // --- стартовые проверки + лог
 const startupIssues = [];
@@ -50,7 +51,8 @@ const users = Datastore.create({ filename: path.join(dataDir, "users.db"), autol
 const logins = Datastore.create({ filename: path.join(dataDir, "logins.db"), autoload: true });
 
 // --- утилиты
-const FIVE_MIN = 300;
+const TEN_MIN = 600;
+
 function getIp(req) {
   const xfwd = req.headers["x-forwarded-for"];
   if (xfwd) return String(xfwd).split(",")[0].trim();
@@ -63,16 +65,8 @@ function timingSafeEq(aHex, bHex) {
     return a.length === b.length && crypto.timingSafeEqual(a, b);
   } catch { return false; }
 }
-function parseInitData(initDataStr) {
-  const params = {};
-  for (const kv of String(initDataStr).split("&")) {
-    const [k, v] = kv.split("=");
-    if (!k) continue;
-    params[decodeURIComponent(k)] = decodeURIComponent(v || "");
-  }
-  if (params.user) { try { params.user = JSON.parse(params.user); } catch {} }
-  return params;
-}
+
+// Проверка Telegram Login Widget (redirect)
 function verifyLoginWidget(query) {
   const data = { ...query };
   const { hash } = data;
@@ -86,7 +80,7 @@ function verifyLoginWidget(query) {
 
   const nowSec = Math.floor(Date.now()/1000);
   const authDate = Number(query.auth_date || 0);
-  if (!(authDate > 0 && nowSec - authDate < FIVE_MIN)) return null;
+  if (!(authDate > 0 && nowSec - authDate < TEN_MIN)) return null;
 
   return {
     telegram_id: String(query.id || ""),
@@ -96,30 +90,51 @@ function verifyLoginWidget(query) {
     photo_url: query.photo_url || null,
   };
 }
+
+// Проверка Telegram WebApp initData — СТРОГО по докам
 function verifyWebApp(initDataStr) {
-  if (!initDataStr) return null;
-  const params = parseInitData(initDataStr);
-  const hash = params.hash;
-  if (!hash) return null;
+  if (!initDataStr) return { ok:false, reason:"no_initData" };
 
-  const sorted = Object.keys(params).filter(k => k !== "hash").sort().map(k => `${k}=${params[k]}`).join("\n");
+  // 1) Разбираем как есть
+  const usp = new URLSearchParams(initDataStr);
+  const entries = [];
+  for (const [k, v] of usp.entries()) {
+    if (k === "hash") continue;
+    entries.push([k, v]);
+  }
+  // 2) Сортируем по ключу и формируем data_check_string
+  entries.sort(([a], [b]) => a.localeCompare(b));
+  const dataCheckString = entries.map(([k, v]) => `${k}=${v}`).join("\n");
+
+  const hash = usp.get("hash");
+  if (!hash) return { ok:false, reason:"no_hash" };
+
+  // 3) secret = HMAC_SHA256("WebAppData", BOT_TOKEN)
   const secret = crypto.createHmac("sha256", "WebAppData").update(BOT_TOKEN).digest();
-  const expected = crypto.createHmac("sha256", secret).update(sorted).digest("hex");
-  if (!timingSafeEq(hash, expected)) return null;
+  const expected = crypto.createHmac("sha256", secret).update(dataCheckString).digest("hex");
+  if (!timingSafeEq(hash, expected)) return { ok:false, reason:"hash_mismatch" };
 
+  // 4) проверка актуальности
   const nowSec = Math.floor(Date.now()/1000);
-  const authDate = Number(params.auth_date || 0);
-  if (!(authDate > 0 && nowSec - authDate < FIVE_MIN)) return null;
+  const authDate = Number(usp.get("auth_date") || 0);
+  if (!(authDate > 0 && nowSec - authDate < TEN_MIN)) return { ok:false, reason:"stale_auth_date" };
 
-  const u = params.user || {};
+  // 5) user — корректный объект
+  let user = {};
+  try { user = JSON.parse(usp.get("user") || "{}"); } catch { user = {}; }
+
   return {
-    telegram_id: String(u.id || ""),
-    username: u.username || null,
-    first_name: u.first_name || null,
-    last_name: u.last_name || null,
-    photo_url: u.photo_url || null,
+    ok:true,
+    user: {
+      telegram_id: String(user.id || ""),
+      username: user.username || null,
+      first_name: user.first_name || null,
+      last_name: user.last_name || null,
+      photo_url: user.photo_url || null,
+    }
   };
 }
+
 async function safeFetch(url, init = {}, timeoutMs = 8000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -150,6 +165,7 @@ async function notifyAdmin(text) {
   if (!ADMIN_ID) return;
   await tgSend(ADMIN_ID, { text, parse_mode: "HTML", disable_web_page_preview: true });
 }
+
 async function completeLogin(req, source, user) {
   await users.update(
     { telegram_id: user.telegram_id },
@@ -193,7 +209,7 @@ app.set("trust proxy", 1);
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(morgan("tiny"));
 app.use(express.urlencoded({ extended: true }));
-app.use(express.json()); // стандартный лимит 100kb — норм для вебхука
+app.use(express.json());
 app.use(session({
   secret: SESSION_SECRET,
   resave: false,
@@ -220,17 +236,21 @@ app.get("/auth/telegram-redirect", async (req, res) => {
     res.status(500).send("Internal error");
   }
 });
+
 app.post("/webapp-auth", async (req, res) => {
   try {
-    const user = verifyWebApp(req.body.initData);
-    if (!user || !user.telegram_id) return res.status(401).json({ ok: false });
-    await completeLogin(req, "webapp", user);
+    const result = verifyWebApp(req.body.initData);
+    if (DEBUG_AUTH) console.log("[auth:webapp]", result.ok ? "ok" : `fail:${result.reason}`);
+    if (!result.ok || !result.user?.telegram_id) return res.status(401).json({ ok: false });
+
+    await completeLogin(req, "webapp", result.user);
     req.session.save(() => res.json({ ok: true }));
   } catch (e) {
     console.error("webapp-auth error:", e?.message || e);
     res.status(500).json({ ok: false });
   }
 });
+
 app.get("/api/me", (req, res) => {
   try {
     if (!req.session.user) return res.status(401).json({ ok: false });
@@ -239,6 +259,7 @@ app.get("/api/me", (req, res) => {
     res.status(500).json({ ok: false });
   }
 });
+
 app.post("/logout", (req, res) => { try { req.session.destroy(() => res.json({ ok: true })); } catch { res.json({ ok: true }); } });
 app.get("/logout", (req, res) => { try { req.session.destroy(() => res.redirect("/")); } catch { res.redirect("/"); } });
 
@@ -280,7 +301,8 @@ app.get("/debug", (req, res) => {
       SESSION_SECRET: !!SESSION_SECRET,
       PUBLIC_URL,
       WEBHOOK_SECRET: !!WEBHOOK_SECRET,
-      PORT: PORT
+      PORT: PORT,
+      DEBUG_AUTH: !!DEBUG_AUTH
     },
     notes: startupIssues
   });
@@ -306,7 +328,7 @@ app.get("/bot/set-webhook", async (req, res) => {
   }
 });
 
-// webhook
+// webhook — /start с INLINE web_app
 app.post("/bot/webhook", async (req, res) => {
   try {
     if (req.query.secret !== WEBHOOK_SECRET) return res.status(401).json({ ok: false });
@@ -327,16 +349,14 @@ app.post("/bot/webhook", async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     console.error("webhook error:", e?.message || e);
-    // даже при ошибке — всегда 200, чтобы Telegram не ретраил
-    res.json({ ok: true });
+    res.json({ ok: true }); // не ретраим
   }
 });
 
-// глобальные ловушки — только логируем, НЕ падаем
+// глобальные ловушки — логируем, но НЕ падаем
 process.on("unhandledRejection", (e) => { console.error("unhandledRejection", e); });
-process.on("uncaughtException", (e) => { console.error("uncaughtException", e); /* не выходим */ });
+process.on("uncaughtException", (e) => { console.error("uncaughtException", e); /* живём */ });
 
-// start
 app.listen(PORT, () => {
   console.log(`Server running on 0.0.0.0:${PORT}`);
 });
