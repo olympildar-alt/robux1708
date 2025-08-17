@@ -1,5 +1,5 @@
 // server.js — Telegram Login Widget + WebApp + сессии + уведомления + админка + вебхук
-// Совместимость с nedb-promises без cfind(): сортировка/лимиты через массивы
+// Совместимость с nedb-promises без cfind(); автопереход: прокидываем ?to=...
 
 const express = require("express");
 const crypto = require("crypto");
@@ -26,6 +26,8 @@ const WEBAPP_NOTIFY = Number(process.env.WEBAPP_NOTIFY ?? 1);
 const PUBLIC_URL = process.env.PUBLIC_URL || "";
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "change_me_secret";
 const DEBUG_AUTH = Number(process.env.DEBUG_AUTH || 0);
+// Куда возвращать пользователя после логина (можно переопределить в .env)
+const AFTER_LOGIN_URL = process.env.AFTER_LOGIN_URL || (PUBLIC_URL ? PUBLIC_URL.replace(/\/$/,"") + "/" : "/");
 
 // --- стартовые проверки + лог
 const startupIssues = [];
@@ -40,6 +42,7 @@ console.log("[startup] env summary:", {
   hasADMIN_PASS: !!ADMIN_PASS,
   hasSESSION_SECRET: !!SESSION_SECRET,
   PUBLIC_URL,
+  AFTER_LOGIN_URL,
   PORT,
 });
 if (startupIssues.length) console.warn("[startup] issues:", startupIssues);
@@ -66,7 +69,7 @@ function timingSafeEq(aHex, bHex) {
   } catch { return false; }
 }
 
-// Проверка Login Widget
+// Login Widget
 function verifyLoginWidget(query) {
   const data = { ...query };
   const { hash } = data;
@@ -91,33 +94,23 @@ function verifyLoginWidget(query) {
   };
 }
 
-// Проверка WebApp initData — строго по докам
+// WebApp initData — строго по докам
 function verifyWebApp(initDataStr) {
   if (!initDataStr) return { ok:false, reason:"no_initData" };
-
   const usp = new URLSearchParams(initDataStr);
   const entries = [];
-  for (const [k, v] of usp.entries()) {
-    if (k === "hash") continue;
-    entries.push([k, v]);
-  }
+  for (const [k, v] of usp.entries()) if (k !== "hash") entries.push([k, v]);
   entries.sort(([a],[b]) => a.localeCompare(b));
   const dataCheckString = entries.map(([k,v]) => `${k}=${v}`).join("\n");
-
   const hash = usp.get("hash");
   if (!hash) return { ok:false, reason:"no_hash" };
-
   const secret = crypto.createHmac("sha256", "WebAppData").update(BOT_TOKEN).digest();
   const expected = crypto.createHmac("sha256", secret).update(dataCheckString).digest("hex");
   if (!timingSafeEq(hash, expected)) return { ok:false, reason:"hash_mismatch" };
-
   const nowSec = Math.floor(Date.now()/1000);
   const authDate = Number(usp.get("auth_date") || 0);
   if (!(authDate > 0 && nowSec - authDate < TEN_MIN)) return { ok:false, reason:"stale_auth_date" };
-
-  let user = {};
-  try { user = JSON.parse(usp.get("user") || "{}"); } catch { user = {}; }
-
+  let user = {}; try { user = JSON.parse(usp.get("user") || "{}"); } catch {}
   return {
     ok:true,
     user: {
@@ -167,7 +160,6 @@ async function completeLogin(req, source, user) {
     { $set: { ...user, updated_at: Date.now() } },
     { upsert: true }
   );
-
   const loginDoc = {
     telegram_id: user.telegram_id,
     source,
@@ -177,11 +169,9 @@ async function completeLogin(req, source, user) {
   };
   await logins.insert(loginDoc);
 
-  // >>> Без cfind: берём все, сортируем в памяти и берём предыдущий
   const arr = await logins.find({ telegram_id: user.telegram_id });
   const sorted = arr.sort((a,b) => (b.ts||0) - (a.ts||0));
-  const prev = sorted[1]; // предыдущая запись
-
+  const prev = sorted[1];
   const cooldown = NOTIFY_COOLDOWN_MIN * 60 * 1000;
   const shouldNotify = !prev || Date.now() - (prev?.ts || 0) > cooldown;
 
@@ -262,13 +252,12 @@ app.get("/api/me", (req, res) => {
 app.post("/logout", (req, res) => { try { req.session.destroy(() => res.json({ ok: true })); } catch { res.json({ ok: true }); } });
 app.get("/logout", (req, res) => { try { req.session.destroy(() => res.redirect("/")); } catch { res.redirect("/"); } });
 
-// admin (без cfind)
+// admin
 app.get("/admin", async (req, res) => {
   try {
     if (!ADMIN_PASS || req.query.pass !== ADMIN_PASS) return res.status(401).send("Unauthorized");
     const all = await logins.find({});
     const rows = all.sort((a,b) => (b.ts||0) - (a.ts||0)).slice(0, 200);
-
     const html = `<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"/><title>Admin — logins</title>
 <style>body{font:14px system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:24px;color:#e6e6e6;background:#0f1115}
@@ -301,6 +290,7 @@ app.get("/debug", (req, res) => {
       ADMIN_PASS: !!ADMIN_PASS,
       SESSION_SECRET: !!SESSION_SECRET,
       PUBLIC_URL,
+      AFTER_LOGIN_URL,
       WEBHOOK_SECRET: !!WEBHOOK_SECRET,
       PORT: PORT,
       DEBUG_AUTH: !!DEBUG_AUTH
@@ -314,6 +304,7 @@ app.get("/bot/set-webhook", async (req, res) => {
   try {
     if (!ADMIN_PASS || req.query.pass !== ADMIN_PASS) return res.status(401).send("Unauthorized");
     if (!PUBLIC_URL) return res.status(400).send("PUBLIC_URL not set");
+    const webAppUrl = `${PUBLIC_URL.replace(/\/$/,"")}/webapp.html?to=${encodeURIComponent(AFTER_LOGIN_URL)}`;
     const hookUrl = `${PUBLIC_URL.replace(/\/$/,"")}/bot/webhook?secret=${encodeURIComponent(WEBHOOK_SECRET)}`;
     const url = `https://api.telegram.org/bot${BOT_TOKEN}/setWebhook`;
     const r = await safeFetch(url, {
@@ -322,14 +313,14 @@ app.get("/bot/set-webhook", async (req, res) => {
       body: JSON.stringify({ url: hookUrl, allowed_updates: ["message"] })
     });
     const j = r && await r.json();
-    res.json({ ok: true, result: j });
+    res.json({ ok: true, result: j, webAppButtonWillOpen: webAppUrl });
   } catch (e) {
     console.error("set-webhook error:", e?.message || e);
     res.status(500).json({ ok: false });
   }
 });
 
-// webhook — /start с INLINE web_app
+// webhook — /start с INLINE web_app (вставляем ?to=...)
 app.post("/bot/webhook", async (req, res) => {
   try {
     if (req.query.secret !== WEBHOOK_SECRET) return res.status(401).json({ ok: false });
@@ -341,7 +332,7 @@ app.post("/bot/webhook", async (req, res) => {
     const text = (msg.text || "").trim();
 
     if (text === "/start" || text.startsWith("/start ")) {
-      const webAppUrl = `${PUBLIC_URL.replace(/\/$/,"")}/webapp.html`;
+      const webAppUrl = `${PUBLIC_URL.replace(/\/$/,"")}/webapp.html?to=${encodeURIComponent(AFTER_LOGIN_URL)}`;
       await tgSend(chatId, {
         text: "Нажми кнопку, чтобы открыть приложение:",
         reply_markup: { inline_keyboard: [[ { text: "Открыть приложение", web_app: { url: webAppUrl } } ]] }
