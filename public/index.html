@@ -3,46 +3,57 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Robux — Telegram Login</title>
+  <title>Robux — вход через Telegram</title>
   <link rel="stylesheet" href="/style.css" />
   <script>
-    // Укажи имя своего бота (без @)
+    /* Укажи имя бота без @ */
     window.BOT_USERNAME = "robuxtransferbot";
   </script>
 </head>
 <body>
-  <header class="wrap">
+  <header class="wrap header">
     <div class="logo">ROBLOX</div>
     <nav class="nav">
       <a href="https://t.me/" target="_blank" rel="noopener">Telegram</a>
       <a href="/healthz" target="_blank" rel="noopener">healthz</a>
+      <span id="user-chip" class="user-chip" hidden>
+        <img id="user-avatar" alt="" />
+        <span id="user-name"></span>
+        <button id="logout" class="button small outline">Выйти</button>
+      </span>
     </nav>
   </header>
 
   <main class="wrap">
-    <section class="hero">
+    <!-- Блок авторизации -->
+    <section id="auth" class="grid gap16">
       <h1>Вход через Telegram</h1>
       <p class="muted">Два способа: через <b>кнопку Telegram</b> (redirect) или <b>WebApp</b> внутри бота.</p>
 
-      <div class="card btns">
-        <!-- Redirect (Login Widget) -->
-        <script async src="https://telegram.org/js/telegram-widget.js?22"
-          data-telegram-login=""
-          data-size="large"
-          data-userpic="false"
-          data-request-access="write"
-          data-auth-url="/auth/telegram-redirect">
-        </script>
+      <div class="card">
+        <div id="tg-widget" class="mb12"></div>
 
-        <!-- Открыть бота и войти через WebApp -->
-        <a id="open-bot" class="button" target="_blank" rel="noopener">Открыть бота</a>
+        <a id="open-bot" class="button">Открыть бота</a>
         <p class="muted small">В боте нажми «Открыть веб-приложение», мы автоматически подтвердим вход.</p>
       </div>
+    </section>
 
-      <div class="card" id="me-card" hidden>
-        <h3>Вы вошли</h3>
-        <div id="me"></div>
-        <button id="logout" class="button outline">Выйти</button>
+    <!-- Основной функционал сайта (виден только после входа) -->
+    <section id="app" class="grid gap16" hidden>
+      <h1>Личный кабинет</h1>
+
+      <div class="card">
+        <h3>Добро пожаловать! </h3>
+        <p class="muted" id="hello-text"></p>
+      </div>
+
+      <!-- пример «функционала» — сюда ставь свой контент -->
+      <div class="card">
+        <h3>Ваши действия</h3>
+        <div class="actions">
+          <button class="button">Действие 1</button>
+          <button class="button outline">Действие 2</button>
+        </div>
       </div>
     </section>
   </main>
